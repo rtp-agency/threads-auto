@@ -1,0 +1,18 @@
+# secrets / local config
+.env
+docker-compose.override.yml
+
+# python
+__pycache__/
+*.pyc
+.venv/
+
+# client personal data (never commit)
+threads_archive.json
+voice_profile.md
+examples.json
+media/
+data/
+
+# os
+.DS_Store
