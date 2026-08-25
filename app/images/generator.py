@@ -203,11 +203,18 @@ def _generate_ai_notification(
     base_image_bytes=None -> свежий скрин: подмешиваем случайные обои/аватар,
     чтобы разные посты не были на одно лицо."""
     common = (
-        "The image must match the visual style of the reference screenshot(s): a "
-        "phone lock-screen notification on a blurred wallpaper, the background fills "
-        "the ENTIRE frame edge to edge (no white margins). The text must be PERFECTLY "
-        "legible, exact wording, in Ukrainian. Time label \"зараз\" on the right. No "
-        "watermarks, no extra UI, no duplicate bubbles."
+        "CRITICAL — the result MUST look like a REAL phone screenshot, NOT an AI "
+        "picture. Reproduce the reference screenshot's UI EXACTLY 1:1: identical "
+        "bubble shape and corner radius, identical semi-transparent dark bubble, the "
+        "SAME font family, size, weight and line spacing, the same paddings and the "
+        "same overall layout as in the reference. Change ONLY the text content and "
+        "the avatar. It is a phone lock-screen message notification over a blurred "
+        "wallpaper; the wallpaper fills the ENTIRE frame edge to edge (no white "
+        "margins, no borders). Text is PERFECTLY legible, EXACT wording, natural "
+        "Ukrainian with correct letters (і, ї, є, ґ). Time label \"зараз\" at the "
+        "top-right of the bubble. ABSOLUTELY NO watermarks, no warped or gibberish "
+        "letters, no extra UI, no duplicated bubbles, no AI artifacts. Subtle, "
+        "believable phone-screen realism."
     )
     keep = base_image_bytes is not None
     if keep:
@@ -238,10 +245,19 @@ def _generate_ai_notification(
             )
         else:
             variety = " Avatar of a generic fictional person (not real or famous)."
+        # иногда (как в реальной переписке) — 2-3 отдельных пузыря подряд от того
+        # же отправителя; ИИ разбивает текст естественно между ними
+        multi = (not keep) and random.random() < 0.3
+        bubble_instr = (
+            " Render the message as 2-3 SEPARATE stacked chat bubbles from the SAME "
+            "sender (as if they sent several messages in a row), each bubble in the "
+            "exact same style; split the text naturally between the bubbles."
+            if multi else " A single message bubble."
+        )
         prompt = (
-            f"A single incoming Telegram message notification. Contact name "
-            f"\"{sender}\" at the top, small Telegram logo near the avatar. Message "
-            f"text: \"{message}\".{variety} " + common
+            f"An incoming Telegram message notification. Contact name \"{sender}\" at "
+            f"the top, small Telegram logo near the avatar. Message text: "
+            f"\"{message}\".{bubble_instr}{variety} " + common
         )
         style_refs = _load_style_refs(session, limit=2, kind="telegram")
     # «тот же ученик»: предыдущий скрин идёт ПЕРВЫМ и главным референсом

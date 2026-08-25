@@ -79,7 +79,9 @@ BASE_SYSTEM = """\
 Це НЕ реклама в лоб (вона вбиває охоплення) — той самий живий тон, але з гачком:
 - transformation: результат клієнта «до → після» (показує, що з автором реально
   прокачуються; без прямого продажу).
-- pain_point: біль → рішення. Позиціонує автора як рішення, без прямого продажу.
+- pain_point: біль → рішення. ⚠️ ЧЕРГУЙ РІЗНІ болі (не повторюй одну й ту саму),
+  бери різні реальні болі аудиторії ніші. Позиціонує автора як рішення, без
+  прямого продажу.
 - lead_magnet: безкоштовний оффер за дію (збір лідів у директ / коменти).
 
 ПРАВИЛО ПРО ЗОБРАЖЕННЯ: notification заповнюй ТІЛЬКИ для pov_confession. Для
@@ -268,6 +270,34 @@ def sanitize_notification(current: dict, instruction: str) -> dict:
         model=settings.generation_model,
         system_blocks=[SANITIZE_SYSTEM],
         user_text=user,
+        schema=SANITIZE_SCHEMA,
+        max_tokens=2000,
+    )
+
+
+IDEA_SYSTEM = """\
+Ти створюєш дані скріншота-повідомлення для POV-поста за ВІЛЬНИМ описом автора
+(яка ситуація, хто пише, що пише, скільки грошей). Поверни поля
+app/sender/message/amount.
+
+ПРАВИЛА:
+- Визнач app сам: якщо це грошовий переказ — app="monobank" і amount (коротка
+  смішна сума, напр. "37.00₴"), message = коментар до переказу; інакше
+  app="Telegram", amount=null, message = повідомлення співрозмовника.
+- Навіть якщо опис корявий/короткий — зроби message ПРИРОДНИМ, живим, смішним
+  повідомленням у стилі клієнта, а НЕ буквальним переказом опису. Розкрий дотепно.
+- sender: для Telegram — ім'я (+ роль, якщо доречно); для monobank — звичайне
+  ім'я + кумедне прізвище, БЕЗ ролі. НЕ прізвище «Баланс».
+- Нічого не залишай порожнім, без службових слів у message."""
+
+
+def notification_from_idea(idea: str) -> dict:
+    """Строит поля скриншота (app/sender/message/amount) из свободной идеи автора
+    для ручного POV-поста."""
+    return structured_completion(
+        model=settings.generation_model,
+        system_blocks=[IDEA_SYSTEM],
+        user_text=f"ІДЕЯ:\n{idea}",
         schema=SANITIZE_SCHEMA,
         max_tokens=2000,
     )

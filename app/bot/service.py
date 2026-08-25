@@ -367,6 +367,53 @@ def create_continuation_draft(post_id: int) -> dict | None:
         }
 
 
+def fetch_trending_memes(n: int = 5) -> list[dict]:
+    """Свежие трендовые мемы из Reddit (meme-api). [{url, title, subreddit, ups}]."""
+    from app.memes import fetch_trending_memes as _fetch
+
+    return _fetch(n)
+
+
+def create_meme_draft_from_url(url: str) -> dict:
+    """Скачивает мем по URL и запускает штатный флоу подписи (3 варианта)."""
+    from app.memes import download_image
+
+    return create_meme_draft(download_image(url))
+
+
+def create_pov_from_idea(idea: str) -> dict:
+    """Ручной POV-скрин по свободной идее учителя (какой ученик что напишет).
+    Возвращает {post_id, archetype, text, url}."""
+    from app.llm.generation import notification_from_idea
+
+    with session_scope() as session:
+        account = session.scalar(select(Account).limit(1))
+        if account is None:
+            raise RuntimeError("Аккаунт Threads не подключён.")
+        notif = notification_from_idea(idea)
+        post = Post(
+            account_id=account.id,
+            source=PostSource.client_own,
+            archetype=Archetype.pov_confession,
+            text="",  # подпись учитель добавит сам / отредактирует
+            status=PostStatus.draft,
+            meta={"notification": notif},
+        )
+        session.add(post)
+        session.flush()
+        url = generate_notification_image(
+            session, notif["app"], notif["sender"], notif["message"], notif.get("amount")
+        )
+        post.image_url = url
+        return {
+            "post_id": post.id,
+            "archetype": post.archetype.value,
+            "text": post.text,
+            "url": url,
+            "message": notif["message"],
+        }
+
+
 def add_own_post(text: str) -> int:
     """Собственный пост клиента: та же очередь публикации и те же метрики."""
     with session_scope() as session:

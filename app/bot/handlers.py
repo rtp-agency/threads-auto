@@ -51,6 +51,10 @@ class EditImageText(StatesGroup):
     waiting_text = State()
 
 
+class PovIdea(StatesGroup):
+    waiting_idea = State()
+
+
 # --- /start и меню -----------------------------------------------------------
 
 @router.message(Command("start"))
@@ -513,6 +517,10 @@ async def meme_photo(message: Message, bot: Bot, state: FSMContext):
     except Exception as exc:
         await message.answer(f"⚠️ {html.escape(str(exc))}")
         return
+    await _send_meme_captions_card(message, res)
+
+
+async def _send_meme_captions_card(message: Message, res: dict):
     caps = res["captions"]
     text = "Обери підпис до мема:\n\n" + "\n\n".join(
         f"<b>{i + 1}.</b> {html.escape(c)}" for i, c in enumerate(caps)
@@ -537,6 +545,75 @@ async def meme_caption_pick(callback: CallbackQuery):
         f"<b>[Мем]</b>\n\n{html.escape(caption)}",
         reply_markup=kb.draft_kb(int(post_id), with_image=False),
     )
+
+
+# --- Свій POV-скрін за ідеєю автора ------------------------------------------
+
+@router.message(F.text == kb.BTN_POV)
+@router.message(Command("pov"))
+async def pov_start(message: Message, state: FSMContext):
+    await state.set_state(PovIdea.waiting_idea)
+    await message.answer(
+        "Опиши свій POV-скрін (можна коротко/коряво — я оформлю):\n"
+        "• хто і що пише — напр. «пише що не прийде бо кіт захворів»;\n"
+        "• або грошовий переказ — напр. «моно переказ 15 грн, коментар: сорян за "
+        "затримку».\n\nПідпис до поста додаси сам через ✏️ Редагувати."
+    )
+
+
+@router.message(PovIdea.waiting_idea, F.text)
+async def pov_idea_apply(message: Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Роблю скрін за твоєю ідеєю…")
+    try:
+        res = await asyncio.to_thread(service.create_pov_from_idea, message.text)
+    except Exception as exc:
+        await message.answer(f"⚠️ {html.escape(str(exc))}")
+        return
+    await message.answer_photo(
+        _local_photo(res["url"]),
+        caption=f"Готово. Додай підпис через ✏️ Редагувати:\n\n{html.escape(res['message'])}",
+        reply_markup=kb.draft_kb(res["post_id"], with_image=True),
+    )
+
+
+# --- Трендові меми (Reddit) --------------------------------------------------
+
+@router.message(F.text == kb.BTN_MEMES)
+@router.message(Command("memes"))
+async def memes_start(message: Message, state: FSMContext):
+    await message.answer("🎲 Тягну свіжі трендові меми…")
+    memes = await asyncio.to_thread(service.fetch_trending_memes, 5)
+    if not memes:
+        await message.answer("Не вдалося отримати меми зараз, спробуй ще раз.")
+        return
+    await state.update_data(meme_urls=[m["url"] for m in memes])
+    for i, m in enumerate(memes):
+        cap = f"<b>{i + 1}.</b> r/{html.escape(m['subreddit'])} · 👍 {m['ups']}"
+        try:
+            await message.answer_photo(
+                m["url"], caption=cap, reply_markup=kb.meme_pick_kb(i)
+            )
+        except Exception:
+            await message.answer(f"{cap}\n{m['url']}", reply_markup=kb.meme_pick_kb(i))
+
+
+@router.callback_query(F.data.startswith("memepick:"))
+async def meme_pick_from_trend(callback: CallbackQuery, state: FSMContext):
+    idx = int(callback.data.split(":")[1])
+    data = await state.get_data()
+    urls = data.get("meme_urls") or []
+    if not (0 <= idx < len(urls)):
+        await callback.answer("Список застарів, натисни «🎲 Мем з тренду» ще раз", show_alert=True)
+        return
+    await callback.answer("Придумую підписи…")
+    await callback.message.edit_reply_markup(reply_markup=None)
+    try:
+        res = await asyncio.to_thread(service.create_meme_draft_from_url, urls[idx])
+    except Exception as exc:
+        await callback.message.answer(f"⚠️ {html.escape(str(exc))}")
+        return
+    await _send_meme_captions_card(callback.message, res)
 
 
 # --- Свой пост ---------------------------------------------------------------

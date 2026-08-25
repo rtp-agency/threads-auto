@@ -10,6 +10,8 @@ BTN_DRAFTS = "📝 Чернетки постів"
 BTN_OWN_POST = "➕ Свій пост"
 BTN_HELP = "📖 Інструкція"
 BTN_SERIES = "🔁 Продовжити пост"
+BTN_POV = "🖼 Свій POV-скрін"
+BTN_MEMES = "🎲 Мем з тренду"
 
 
 def main_menu() -> ReplyKeyboardMarkup:
@@ -17,9 +19,19 @@ def main_menu() -> ReplyKeyboardMarkup:
         keyboard=[
             [KeyboardButton(text=BTN_STATS), KeyboardButton(text=BTN_DRAFTS)],
             [KeyboardButton(text=BTN_OWN_POST), KeyboardButton(text=BTN_SERIES)],
+            [KeyboardButton(text=BTN_POV), KeyboardButton(text=BTN_MEMES)],
             [KeyboardButton(text=BTN_HELP)],
         ],
         resize_keyboard=True,
+    )
+
+
+def meme_pick_kb(idx: int) -> InlineKeyboardMarkup:
+    """Кнопка «взять этот мем» под каждым присланным трендовым мемом."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="✅ Обрати цей мем", callback_data=f"memepick:{idx}")]
+        ]
     )
 
 

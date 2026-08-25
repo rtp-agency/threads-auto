@@ -12,15 +12,42 @@ from app.tasks import celery_app
 
 logger = logging.getLogger(__name__)
 
-MAX_HEADLINES = 60
+MAX_HEADLINES = 90
+PER_FEED = 25
+
+# Тематические ленты Google News (UA) — чтобы темы были РАЗНООБРАЗНЫМИ, а не только
+# спорт/футбол. settings.news_source_url остаётся первой (общая лента).
+_GN = "https://news.google.com/rss/headlines/section/topic/{topic}?hl=uk&gl=UA&ceid=UA:uk"
+EXTRA_FEEDS = [
+    _GN.format(topic="WORLD"),
+    _GN.format(topic="NATION"),
+    _GN.format(topic="ENTERTAINMENT"),
+    _GN.format(topic="TECHNOLOGY"),
+]
 
 
 @celery_app.task
 def fetch_trend_topics() -> None:
-    feed = feedparser.parse(settings.news_source_url)
-    entries = feed.entries[:MAX_HEADLINES]
+    feeds = [settings.news_source_url] + EXTRA_FEEDS
+    entries = []
+    seen_titles = set()
+    for url in feeds:
+        try:
+            feed = feedparser.parse(url)
+        except Exception:
+            logger.exception("feed parse failed: %s", url)
+            continue
+        for e in feed.entries[:PER_FEED]:
+            title = getattr(e, "title", None)
+            if not title or title in seen_titles:
+                continue
+            seen_titles.add(title)
+            entries.append(e)
+        if len(entries) >= MAX_HEADLINES:
+            break
+    entries = entries[:MAX_HEADLINES]
     if not entries:
-        logger.warning("No entries from news source %s", settings.news_source_url)
+        logger.warning("No entries from any news feed")
         return
 
     headlines = [e.title for e in entries]
