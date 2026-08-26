@@ -5,6 +5,7 @@
 логотипы Telegram/monobank, реалистичный размытый фон-обои. Меняются только
 текст, ник, сумма и аватарка. Поддерживает Telegram-сообщение и monobank-перевод.
 """
+import glob
 import io
 import random
 
@@ -18,26 +19,40 @@ try:
 except Exception:  # pragma: no cover
     _HAS_PILMOJI = False
 
-FONT_REG = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
-FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+
+def _resolve_font(names, fallback):
+    """Ищет шрифт по имени в /usr/share/fonts (Roboto ~ SF Pro), иначе фолбэк."""
+    for n in names:
+        hits = glob.glob(f"/usr/share/fonts/**/{n}", recursive=True)
+        if hits:
+            return sorted(hits)[0]
+    return fallback
+
+
+# Roboto максимально близок к SF Pro (шрифт iOS-скринов клиента); DejaVu — фолбэк
+FONT_REG = _resolve_font(["Roboto-Regular.ttf"], "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+FONT_BOLD = _resolve_font(
+    ["Roboto-Medium.ttf", "Roboto-Bold.ttf"], "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+)
 
 W = 1600
-# тайтовые поля: обрезано почти под сам баббл (как реальный скрин)
-MARGIN_H = 26
-MARGIN_V = 30
+# поля: вокруг пузыря видны обои (как на реальном скрине)
+MARGIN_H = 60
+MARGIN_V = 54
 PAD = 46
 ICON = 132              # аватар/иконка приложения
 GAP = 30
 NAME_SIZE = 52
-MSG_SIZE = 48
-TIME_SIZE = 40
-LINE_H = 64
-RADIUS = 52
+MSG_SIZE = 50
+TIME_SIZE = 42
+LINE_H = 66
+RADIUS = 60
 
-BUBBLE = (28, 28, 31, 232)
+# полупрозрачный светлый пузырь (frosted, как iOS-уведомление на обоях)
+BUBBLE = (126, 124, 138, 158)
 NAME_COL = (255, 255, 255)
-MSG_COL = (238, 238, 242)
-TIME_COL = (150, 150, 156)
+MSG_COL = (240, 240, 244)
+TIME_COL = (206, 206, 212)
 TG_BLUE = (42, 171, 238)
 
 # насыщенные размытые «обои» — как реальные фоны клиента
@@ -124,9 +139,9 @@ def _background(w, h):
         rw, rh = random.randint(w // 3, w // 2), random.randint(h // 2, h)
         d.ellipse((cx - rw, cy - rh, cx + rw, cy + rh), fill=col)
     base = base.filter(ImageFilter.GaussianBlur(160))
-    # лёгкое затемнение, чтобы белый текст читався
+    # лёгкое затемнение, чтобы белый текст читався (обои лишаються насиченими)
     dark = Image.new("RGB", (w, h), (0, 0, 0))
-    return Image.blend(base, dark, 0.18)
+    return Image.blend(base, dark, 0.10)
 
 
 def _draw_line(base, pos, text, font, fill):

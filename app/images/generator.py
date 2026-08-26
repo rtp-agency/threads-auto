@@ -160,12 +160,31 @@ def _random_avatar_bytes(session: Session) -> bytes | None:
     return path.read_bytes() if path.exists() else None
 
 
+def pick_avatar_name(session: Session) -> str | None:
+    """Имя файла случайной аватарки из пула — чтобы «закрепить» одного ученика
+    за постом (тот же аватар при смене текста/продолжении в template-режиме)."""
+    url = pick_random_avatar(session)
+    return url.rsplit("/", 1)[-1] if url else None
+
+
+def _avatar_bytes_by_name(name: str | None) -> bytes | None:
+    if not name:
+        return None
+    path = Path(settings.media_dir) / name
+    return path.read_bytes() if path.exists() else None
+
+
 def _render_template(
-    session: Session, app: str, sender: str, message: str, amount: str | None
+    session: Session,
+    app: str,
+    sender: str,
+    message: str,
+    amount: str | None,
+    avatar_name: str | None = None,
 ) -> bytes:
     from app.images.notification import render_notification
 
-    avatar_bytes = _random_avatar_bytes(session)
+    avatar_bytes = _avatar_bytes_by_name(avatar_name) or _random_avatar_bytes(session)
     if avatar_bytes is None:
         buf = io.BytesIO()
         Image.new("RGB", (130, 130), (90, 90, 96)).save(buf, format="PNG")
@@ -196,72 +215,77 @@ def _generate_ai_notification(
     amount: str | None,
     base_image_bytes: bytes | None = None,
 ) -> bytes:
-    """Генерация скриншота нейросетью по референсам клиента (gpt-image-2).
+    """Генерация скриншота нейросетью с МАКСИМАЛЬНОЙ близостью к реальным скринам
+    клиента (gpt-image-2 images.edit).
 
-    base_image_bytes задан -> «тот же ученик»: берём предыдущий скрин главным
-    референсом и меняем ТОЛЬКО текст (для смены цены/сообщения, продолжения).
-    base_image_bytes=None -> свежий скрин: подмешиваем случайные обои/аватар,
-    чтобы разные посты не были на одно лицо."""
+    Подход: берём РЕАЛЬНЫЙ скриншот клиента как ОСНОВУ и делаем «swap» — меняем
+    ТОЛЬКО текст/имя/аву (иногда фон), а весь дизайн (пузырь, шрифт, вёрстка)
+    остаётся 1:1 как на референсе.
+
+    base_image_bytes задан -> основа фиксирована (тот же ученик/фон: смена цены,
+    продолжение серии). Иначе основой берём случайный реальный скрин клиента."""
+    # общая инструкция: это ПОДМЕНА текста на референсе, а не новая иллюстрация
     common = (
-        "CRITICAL — the result MUST look like a REAL phone screenshot, NOT an AI "
-        "picture. Reproduce the reference screenshot's UI EXACTLY 1:1: identical "
-        "bubble shape and corner radius, identical semi-transparent dark bubble, the "
-        "SAME font family, size, weight and line spacing, the same paddings and the "
-        "same overall layout as in the reference. Change ONLY the text content and "
-        "the avatar. It is a phone lock-screen message notification over a blurred "
-        "wallpaper; the wallpaper fills the ENTIRE frame edge to edge (no white "
-        "margins, no borders). Text is PERFECTLY legible, EXACT wording, natural "
-        "Ukrainian with correct letters (і, ї, є, ґ). Time label \"зараз\" at the "
-        "top-right of the bubble. ABSOLUTELY NO watermarks, no warped or gibberish "
-        "letters, no extra UI, no duplicated bubbles, no AI artifacts. Subtle, "
-        "believable phone-screen realism."
+        "IMPORTANT: this is a TEXT-SWAP on the reference screenshot, NOT a new "
+        "illustration. The reference image IS the exact target design. Reproduce it "
+        "PIXEL-FOR-PIXEL: identical bubble shape, corner radius, bubble color and "
+        "opacity, the EXACT same font family, size, weight and line spacing, identical "
+        "paddings, identical layout and identical wallpaper-blur style and framing. "
+        "The time label \"зараз\" stays in the exact same position. Everything must "
+        "stay IDENTICAL to the reference EXCEPT the changes listed below. Text must be "
+        "perfectly legible, EXACT wording, natural Ukrainian (і ї є ґ). Absolutely NO "
+        "watermarks, NO warped or gibberish letters, no extra UI, no AI look — it must "
+        "be indistinguishable from a real phone screenshot."
     )
-    keep = base_image_bytes is not None
-    if keep:
-        common += (
-            " CRITICAL: keep the EXACT same avatar/person face and the EXACT same "
-            "wallpaper background as the FIRST reference image — change ONLY the "
-            "notification text to the new wording."
-        )
     is_mono = app.lower() == "monobank" and amount
-    if is_mono:
-        prompt = (
-            f"Recreate the reference monobank push notification 1:1 — same layout, "
-            f"same dark bubble, same background style. Change ONLY the text. The app "
-            f"icon on the left is ONLY the black rounded 'mono' square — there is NO "
-            f"person avatar at all. Top line: a pointing-finger emoji, a small bank "
-            f"card, then the amount \"{amount}\" in bold. Next line \"Від: {sender}\". "
-            f"Next line \"Баланс:\" (WITH a colon) followed by the number scribbled "
-            f"out. Then \"Коментар: {message}\" (the word Коментар MUST be followed "
-            f"by a colon). " + common
-        )
-        style_refs = _load_style_refs(session, limit=2, kind="monobank")
+    kind = "monobank" if is_mono else "telegram"
+    real_refs = _load_style_refs(session, limit=3, kind=kind)
+
+    keep = base_image_bytes is not None
+    # ОСНОВА: при keep — заданный скрин; иначе — случайный РЕАЛЬНЫЙ скрин клиента
+    if keep:
+        base = base_image_bytes
+        extra_refs = real_refs[:1]
     else:
-        variety = ""
-        if not keep:
-            variety = (
-                f" Avatar: a photo of {random.choice(_VARIETY_AVATARS)} (generic "
-                f"fictional person, not real or famous). Wallpaper: {random.choice(_VARIETY_WALLPAPERS)}."
+        base = real_refs[0] if real_refs else None
+        extra_refs = real_refs[1:2]
+
+    if is_mono:
+        changes = (
+            f"CHANGE ONLY: the amount to \"{amount}\" (bold, top line after the "
+            f"pointing-finger + bank-card icons); the name after \"Від:\" to "
+            f"\"{sender}\"; and the comment after \"Коментар:\" to \"{message}\". Keep "
+            f"the words \"Баланс:\" and \"Коментар:\" WITH their colons, keep the "
+            f"scribble over the balance, keep the black rounded 'mono' icon (NO person "
+            f"avatar)."
+        )
+        prompt = f"{common}\n\n{changes}"
+    else:
+        # что разрешено менять на телеграм-референсе
+        change_bits = [
+            f"the message text to \"{message}\"",
+            f"the contact name at the top to \"{sender}\"",
+            "the avatar to a DIFFERENT generic fictional person (not real or famous)",
+        ]
+        if not keep and random.random() < 0.3:
+            change_bits.append(
+                f"the blurred wallpaper to {random.choice(_VARIETY_WALLPAPERS)} "
+                "(keep the same blur style and framing)"
             )
-        else:
-            variety = " Avatar of a generic fictional person (not real or famous)."
-        # иногда (как в реальной переписке) — 2-3 отдельных пузыря подряд от того
-        # же отправителя; ИИ разбивает текст естественно между ними
         multi = (not keep) and random.random() < 0.3
-        bubble_instr = (
-            " Render the message as 2-3 SEPARATE stacked chat bubbles from the SAME "
-            "sender (as if they sent several messages in a row), each bubble in the "
-            "exact same style; split the text naturally between the bubbles."
-            if multi else " A single message bubble."
-        )
-        prompt = (
-            f"An incoming Telegram message notification. Contact name \"{sender}\" at "
-            f"the top, small Telegram logo near the avatar. Message text: "
-            f"\"{message}\".{bubble_instr}{variety} " + common
-        )
-        style_refs = _load_style_refs(session, limit=2, kind="telegram")
-    # «тот же ученик»: предыдущий скрин идёт ПЕРВЫМ и главным референсом
-    refs = ([base_image_bytes] + style_refs[:1]) if keep else style_refs
+        if multi:
+            change_bits.append(
+                "render the message as 2-3 SEPARATE stacked bubbles from the same "
+                "sender (same exact bubble style), splitting the text naturally"
+            )
+        if keep:
+            # тот же ученик: НЕ трогаем аву и фон
+            change_bits = [f"the message text to \"{message}\""]
+        changes = "CHANGE ONLY: " + "; ".join(change_bits) + ". Keep the small "
+        changes += "Telegram logo near the avatar. Everything else identical."
+        prompt = f"{common}\n\n{changes}"
+
+    refs = [base] + list(extra_refs) if base is not None else list(extra_refs)
     if refs:
         return _generate_openai_with_refs(prompt, refs)
     return _generate_openai(prompt)
@@ -333,21 +357,24 @@ def generate_notification_image(
     message: str,
     amount: str | None = None,
     base_image_bytes: bytes | None = None,
+    avatar_name: str | None = None,
 ) -> str:
     """Скриншот-уведомление для POV. Режим — settings.notification_render_mode:
     'ai' (генерация gpt-image-2 по референсам клиента) или 'template' (Pillow).
 
-    base_image_bytes (только ai-режим) -> сохранить того же ученика/фон, поменять
-    лишь текст (смена цены/сообщения, продолжение серии)."""
+    «Тот же ученик» при смене текста/продолжении: в ai-режиме — base_image_bytes,
+    в template-режиме — avatar_name (закреплённый аватар из пула)."""
     if settings.notification_render_mode == "template":
-        image_bytes = _render_template(session, app, sender, message, amount)
+        image_bytes = _render_template(session, app, sender, message, amount, avatar_name)
     else:
         try:
             image_bytes = _generate_ai_notification(
                 session, app, sender, message, amount, base_image_bytes
             )
         except Exception:
-            image_bytes = _render_template(session, app, sender, message, amount)  # фолбэк
+            image_bytes = _render_template(
+                session, app, sender, message, amount, avatar_name
+            )  # фолбэк
     return _save_image(image_bytes, "notif")
 
 

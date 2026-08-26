@@ -256,13 +256,20 @@ def update_post_text(post_id: int, text: str) -> bool:
 
 
 def regenerate_post_image(post_id: int) -> str | None:
+    """Свежая картинка (новый ученик/фон). Закрепляет выбранный аватар в meta,
+    чтобы смена текста/продолжение оставили того же ученика (template-режим)."""
+    from app.images.generator import pick_avatar_name
+
     with session_scope() as session:
         post = session.get(Post, post_id)
         if post is None or not post.meta or "notification" not in post.meta:
             return None
         n = post.meta["notification"]
+        avatar = pick_avatar_name(session)
+        post.meta = {**post.meta, "avatar": avatar}
         url = generate_notification_image(
-            session, n["app"], n["sender"], n["message"], n.get("amount")
+            session, n["app"], n["sender"], n["message"], n.get("amount"),
+            avatar_name=avatar,
         )
         post.image_url = url
         return url
@@ -286,7 +293,8 @@ def change_image_text(post_id: int, instruction: str) -> dict | None:
         if post is None or not post.meta or "notification" not in post.meta:
             return None
         new_notif = sanitize_notification(post.meta["notification"], instruction)
-        post.meta = {"notification": new_notif}
+        avatar = post.meta.get("avatar")  # тот же ученик (template-режим)
+        post.meta = {**post.meta, "notification": new_notif}
         url = generate_notification_image(
             session,
             new_notif["app"],
@@ -294,6 +302,7 @@ def change_image_text(post_id: int, instruction: str) -> dict | None:
             new_notif["message"],
             new_notif.get("amount"),
             base_image_bytes=_post_image_bytes(post),
+            avatar_name=avatar,
         )
         post.image_url = url
         return {"url": url, "message": new_notif["message"], "app": new_notif["app"]}
@@ -338,6 +347,7 @@ def create_continuation_draft(post_id: int) -> dict | None:
             return None
         account_id = src.account_id
         base_bytes = _post_image_bytes(src)
+        avatar = src.meta.get("avatar")  # тот же ученик (template-режим)
         seq = generate_sequel(session, account_id, src.text, src.meta["notification"])
         notif = seq["notification"]
         new_post = Post(
@@ -346,7 +356,7 @@ def create_continuation_draft(post_id: int) -> dict | None:
             archetype=Archetype.pov_confession,
             text=seq["caption"],
             status=PostStatus.draft,
-            meta={"notification": notif},
+            meta={"notification": notif, "avatar": avatar},
         )
         session.add(new_post)
         session.flush()
@@ -357,6 +367,7 @@ def create_continuation_draft(post_id: int) -> dict | None:
             notif["message"],
             notif.get("amount"),
             base_image_bytes=base_bytes,
+            avatar_name=avatar,
         )
         new_post.image_url = url
         return {
@@ -385,24 +396,27 @@ def create_pov_from_idea(idea: str) -> dict:
     """Ручной POV-скрин по свободной идее учителя (какой ученик что напишет).
     Возвращает {post_id, archetype, text, url}."""
     from app.llm.generation import notification_from_idea
+    from app.images.generator import pick_avatar_name
 
     with session_scope() as session:
         account = session.scalar(select(Account).limit(1))
         if account is None:
             raise RuntimeError("Аккаунт Threads не подключён.")
         notif = notification_from_idea(idea)
+        avatar = pick_avatar_name(session)
         post = Post(
             account_id=account.id,
             source=PostSource.client_own,
             archetype=Archetype.pov_confession,
             text="",  # подпись учитель добавит сам / отредактирует
             status=PostStatus.draft,
-            meta={"notification": notif},
+            meta={"notification": notif, "avatar": avatar},
         )
         session.add(post)
         session.flush()
         url = generate_notification_image(
-            session, notif["app"], notif["sender"], notif["message"], notif.get("amount")
+            session, notif["app"], notif["sender"], notif["message"], notif.get("amount"),
+            avatar_name=avatar,
         )
         post.image_url = url
         return {
