@@ -205,8 +205,8 @@ def render_notification(sender, message, avatar_bytes, app="telegram", amount=No
         base.paste(badge, (ax + ICON - 44, ay + ICON - 44), badge)
 
     d = ImageDraw.Draw(base)
-    tw = d.textlength("зараз", font=time_font)
-    d.text((MARGIN_H + bubble_w - PAD - tw, ay + 6), "зараз", font=time_font, fill=TIME_COL)
+    tw = d.textlength("сейчас", font=time_font)
+    d.text((MARGIN_H + bubble_w - PAD - tw, ay + 6), "сейчас", font=time_font, fill=TIME_COL)
 
     y = MARGIN_V + PAD
     for i, (font, text) in enumerate(lines):

@@ -73,11 +73,23 @@ def _save_image(image_bytes: bytes, prefix: str) -> str:
     return f"{settings.public_base_url.rstrip('/')}/media/{filename}"
 
 
+class ImageQuotaError(RuntimeError):
+    """Закончились кредиты у провайдера генерации картинок — не ретраим."""
+
+
 def _image_post_retry(do_post, attempts: int = 5) -> bytes:
-    """POST к image-API с ретраями на 429/5xx (иначе картинка падает на шаблон)."""
+    """POST к image-API с ретраями на 429/5xx (иначе картинка падает на шаблон).
+
+    Исключение — insufficient_quota (нет кредитов): это не транзиентная ошибка,
+    сразу поднимаем понятную ImageQuotaError, без бессмысленных ретраев."""
     resp = None
     for i in range(attempts):
         resp = do_post()
+        if resp.status_code == 429 and "insufficient_quota" in resp.text:
+            raise ImageQuotaError(
+                "Закінчились кредити на генерацію фото (OpenAI). Поповни баланс: "
+                "platform.openai.com/settings/organization/billing."
+            )
         if resp.status_code == 429 or resp.status_code >= 500:
             wait = float(resp.headers.get("retry-after", 0) or 2 ** i)
             time.sleep(min(max(wait, 2), 30))
@@ -199,12 +211,50 @@ _VARIETY_WALLPAPERS = [
     "a blue-purple gradient", "an abstract colorful blur", "a blurred cozy room",
     "a minimal beige wallpaper",
 ]
-_VARIETY_AVATARS = [
-    "a young woman around 20", "a man around 30", "a teenage boy",
-    "a woman around 40", "a young man ~25 with glasses", "a girl ~18",
-    "a man ~35 with a beard", "a woman ~28", "a young guy in a hoodie",
-    "a middle-aged man", "a smiling young woman", "a serious-looking student",
+# аватары по полу — чтобы пол на фото совпадал с полом имени отправителя
+_MALE_LOOKS = [
+    "a man around 30", "a young man ~25", "a teenage boy",
+    "a man ~35 with a beard", "a young man ~25 with glasses",
+    "a young guy in a hoodie", "a middle-aged man", "a serious-looking male student",
 ]
+_FEMALE_LOOKS = [
+    "a young woman around 20", "a woman around 40", "a girl ~18",
+    "a woman ~28", "a smiling young woman", "a young woman ~25 with glasses",
+    "a female student ~22",
+]
+
+# мужские имена/уменьшительные, оканчивающиеся на гласную (иначе правило «-а/-я = ж»)
+_MALE_VOWEL_NAMES = {
+    "діма", "дима", "міша", "миша", "гриша", "льоша", "лёоша", "лёша", "альоша",
+    "паша", "гоша", "жора", "ілля", "илья", "микита", "никита", "кузьма", "фома",
+    "лука", "хома", "сава", "сєня", "сеня", "вітя", "витя", "костя", "петя",
+    "вася", "толя", "коля", "юра", "гена", "стьопа", "стёпа", "боря", "сашко",
+}
+_FEMALE_NAMES = {
+    "оля", "аня", "катя", "настя", "маша", "даша", "юля", "ліза", "лиза", "віка",
+    "вика", "поля", "галя", "іра", "ира", "таня", "софія", "марія", "олена",
+    "ірина", "наталя", "світлана", "юлія", "анна", "оксана", "карина", "аліна",
+    "поліна", "злата", "мілана", "христина", "діана", "вероніка", "яна", "інна",
+}
+
+
+def _name_gender(sender: str) -> str:
+    """«man» / «woman» по имени отправителя (для совпадения аватара с именем)."""
+    s = (sender or "").lower()
+    if "учениця" in s or "ученица" in s:
+        return "woman"
+    tokens = [
+        t for t in s.replace("-", " ").split()
+        if t not in ("учень", "ученик", "учениця", "ученица", "студент", "студентка")
+    ]
+    name = tokens[0] if tokens else s.strip()
+    if name in _FEMALE_NAMES:
+        return "woman"
+    if name in _MALE_VOWEL_NAMES:
+        return "man"
+    if name.endswith(("а", "я")):
+        return "woman"
+    return "man"
 
 
 def _generate_ai_notification(
@@ -215,77 +265,78 @@ def _generate_ai_notification(
     amount: str | None,
     base_image_bytes: bytes | None = None,
 ) -> bytes:
-    """Генерация скриншота нейросетью с МАКСИМАЛЬНОЙ близостью к реальным скринам
-    клиента (gpt-image-2 images.edit).
+    """Генерация скриншота нейросетью по референсам клиента (gpt-image-2).
 
-    Подход: берём РЕАЛЬНЫЙ скриншот клиента как ОСНОВУ и делаем «swap» — меняем
-    ТОЛЬКО текст/имя/аву (иногда фон), а весь дизайн (пузырь, шрифт, вёрстка)
-    остаётся 1:1 как на референсе.
-
-    base_image_bytes задан -> основа фиксирована (тот же ученик/фон: смена цены,
-    продолжение серии). Иначе основой берём случайный реальный скрин клиента."""
-    # общая инструкция: это ПОДМЕНА текста на референсе, а не новая иллюстрация
+    base_image_bytes задан -> «тот же ученик»: берём предыдущий скрин главным
+    референсом и меняем ТОЛЬКО текст (для смены цены/сообщения, продолжения).
+    base_image_bytes=None -> свежий скрин: подмешиваем случайные обои/аватар,
+    чтобы разные посты не были на одно лицо."""
     common = (
-        "IMPORTANT: this is a TEXT-SWAP on the reference screenshot, NOT a new "
-        "illustration. The reference image IS the exact target design. Reproduce it "
-        "PIXEL-FOR-PIXEL: identical bubble shape, corner radius, bubble color and "
-        "opacity, the EXACT same font family, size, weight and line spacing, identical "
-        "paddings, identical layout and identical wallpaper-blur style and framing. "
-        "The time label \"зараз\" stays in the exact same position. Everything must "
-        "stay IDENTICAL to the reference EXCEPT the changes listed below. Text must be "
-        "perfectly legible, EXACT wording, natural Ukrainian (і ї є ґ). Absolutely NO "
-        "watermarks, NO warped or gibberish letters, no extra UI, no AI look — it must "
-        "be indistinguishable from a real phone screenshot."
+        "CRITICAL — the result MUST look like a REAL phone screenshot, NOT an AI "
+        "picture. Reproduce the reference screenshot's UI EXACTLY 1:1: identical "
+        "bubble shape and corner radius, identical semi-transparent dark bubble, the "
+        "SAME font family, size, weight and line spacing, the same paddings and the "
+        "same overall layout as in the reference. Change ONLY the text content and "
+        "the avatar. It is a phone lock-screen message notification over a blurred "
+        "wallpaper; the wallpaper fills the ENTIRE frame edge to edge (no white "
+        "margins, no borders). Text is PERFECTLY legible, EXACT wording, natural "
+        "Ukrainian with correct letters (і, ї, є, ґ). Time label \"сейчас\" at the "
+        "top-right of the bubble. ABSOLUTELY NO watermarks, no warped or gibberish "
+        "letters, no extra UI, no duplicated bubbles, no AI artifacts. A soft, "
+        "realistic drop shadow beneath the notification bubble, like a real iOS "
+        "lock-screen. Subtle, believable phone-screen realism."
     )
-    is_mono = app.lower() == "monobank" and amount
-    kind = "monobank" if is_mono else "telegram"
-    real_refs = _load_style_refs(session, limit=3, kind=kind)
-
     keep = base_image_bytes is not None
-    # ОСНОВА: при keep — заданный скрин; иначе — случайный РЕАЛЬНЫЙ скрин клиента
     if keep:
-        base = base_image_bytes
-        extra_refs = real_refs[:1]
-    else:
-        base = real_refs[0] if real_refs else None
-        extra_refs = real_refs[1:2]
-
-    if is_mono:
-        changes = (
-            f"CHANGE ONLY: the amount to \"{amount}\" (bold, top line after the "
-            f"pointing-finger + bank-card icons); the name after \"Від:\" to "
-            f"\"{sender}\"; and the comment after \"Коментар:\" to \"{message}\". Keep "
-            f"the words \"Баланс:\" and \"Коментар:\" WITH their colons, keep the "
-            f"scribble over the balance, keep the black rounded 'mono' icon (NO person "
-            f"avatar)."
+        common += (
+            " CRITICAL: keep the EXACT same avatar/person face and the EXACT same "
+            "wallpaper background as the FIRST reference image — change ONLY the "
+            "notification text to the new wording."
         )
-        prompt = f"{common}\n\n{changes}"
+    is_mono = app.lower() == "monobank" and amount
+    if is_mono:
+        prompt = (
+            f"Recreate the reference monobank push notification 1:1 — same layout, "
+            f"same dark bubble, same background style. Change ONLY the text. The app "
+            f"icon on the left is ONLY the black rounded 'mono' square — there is NO "
+            f"person avatar at all. Top line: a pointing-finger emoji, a small bank "
+            f"card, then the amount \"{amount}\" in bold. Next line \"Від: {sender}\". "
+            f"Next line \"Баланс:\" (WITH a colon) followed by the number scribbled "
+            f"out. Then \"Коментар: {message}\" (the word Коментар MUST be followed "
+            f"by a colon). " + common
+        )
+        style_refs = _load_style_refs(session, limit=2, kind="monobank")
     else:
-        # что разрешено менять на телеграм-референсе
-        change_bits = [
-            f"the message text to \"{message}\"",
-            f"the contact name at the top to \"{sender}\"",
-            "the avatar to a DIFFERENT generic fictional person (not real or famous)",
-        ]
-        if not keep and random.random() < 0.3:
-            change_bits.append(
-                f"the blurred wallpaper to {random.choice(_VARIETY_WALLPAPERS)} "
-                "(keep the same blur style and framing)"
+        # аватар СОВПАДАЕТ по полу с именем отправителя
+        gender = _name_gender(sender)
+        looks = _MALE_LOOKS if gender == "man" else _FEMALE_LOOKS
+        if not keep:
+            variety = (
+                f" Avatar: a photo of {random.choice(looks)} — the avatar MUST be "
+                f"{'MALE' if gender == 'man' else 'FEMALE'} to match the name "
+                f"\"{sender}\" (generic fictional person, not real or famous). "
+                f"Wallpaper: {random.choice(_VARIETY_WALLPAPERS)}."
             )
-        multi = (not keep) and random.random() < 0.3
-        if multi:
-            change_bits.append(
-                "render the message as 2-3 SEPARATE stacked bubbles from the same "
-                "sender (same exact bubble style), splitting the text naturally"
+        else:
+            variety = (
+                f" Avatar of a generic fictional {'man' if gender == 'man' else 'woman'} "
+                f"(not real or famous), matching the name \"{sender}\"."
             )
-        if keep:
-            # тот же ученик: НЕ трогаем аву и фон
-            change_bits = [f"the message text to \"{message}\""]
-        changes = "CHANGE ONLY: " + "; ".join(change_bits) + ". Keep the small "
-        changes += "Telegram logo near the avatar. Everything else identical."
-        prompt = f"{common}\n\n{changes}"
-
-    refs = [base] + list(extra_refs) if base is not None else list(extra_refs)
+        # по умолчанию ОДНО сообщение; 2-3 пузыря — только для очень длинного текста
+        multi = (not keep) and len(message) > 200
+        bubble_instr = (
+            " Render the message as 2-3 SEPARATE stacked chat bubbles from the SAME "
+            "sender (as if they sent several messages in a row), each bubble in the "
+            "exact same style; split the text naturally between the bubbles."
+            if multi else " A SINGLE message bubble (one bubble only)."
+        )
+        prompt = (
+            f"An incoming Telegram message notification. Contact name \"{sender}\" at "
+            f"the top, small Telegram logo near the avatar. Message text: "
+            f"\"{message}\".{bubble_instr}{variety} " + common
+        )
+        style_refs = _load_style_refs(session, limit=2, kind="telegram")
+    refs = ([base_image_bytes] + style_refs[:1]) if keep else style_refs
     if refs:
         return _generate_openai_with_refs(prompt, refs)
     return _generate_openai(prompt)
